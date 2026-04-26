@@ -79,7 +79,7 @@ def is_diabetes_related(query: str) -> bool:
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    return "GlucoAI Backend Running 🚀"
+    return render_template("index.html")
 
 
 @app.route("/chat", methods=["POST"])

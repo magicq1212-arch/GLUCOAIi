@@ -1,23 +1,22 @@
 from flask import Flask, request, jsonify, render_template, session
 from flask_cors import CORS
 import requests
-import json
 from datetime import datetime
 import os
 
 app = Flask(__name__)
-app.secret_key = "glucoai_secret_key_2024"
+app.secret_key = os.environ.get("SECRET_KEY", "glucoai_secret_key_2024")
 CORS(app)
 
 # ── API Configuration ──────────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")   # set in Render env vars
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL   = "llama-3.1-8b-instant"
 
-# ── Model Parameters (INT428 requirement: justify temperature & top_p) ─────────
-MODEL_TEMPERATURE = 0.3   # Low → deterministic, factual medical answers
-MODEL_TOP_P       = 0.85  # Nucleus sampling: restricts to safe, reliable tokens
-MODEL_MAX_TOKENS  = 200   # Allow slightly fuller answers
+# ── Model Parameters ───────────────────────────────────────────────────────────
+MODEL_TEMPERATURE = 0.3
+MODEL_TOP_P       = 0.85
+MODEL_MAX_TOKENS  = 200
 
 # ── In-memory readings store ───────────────────────────────────────────────────
 readings = []
@@ -35,7 +34,8 @@ DIABETES_KEYWORDS = [
     "glucagon", "basal", "bolus", "prandial", "gestational", "mody"
 ]
 
-SYSTEM_PROMPT = SYSTEM = SYSTEM_PROMPT = """You are GlucoAI, a medical information assistant built exclusively for diabetes management.
+# ── System Prompt ──────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are GlucoAI, a medical information assistant built exclusively for diabetes management.
 
 IDENTITY LOCK:
 - You are NOT a general AI, NOT ChatGPT, NOT Claude, NOT an LLM.
@@ -64,9 +64,11 @@ STYLE:
 
 MEMORY: Use prior conversation turns for context on follow-up questions."""
 
+
 def is_diabetes_related(query: str) -> bool:
     q = query.lower()
     return any(kw in q for kw in DIABETES_KEYWORDS)
+
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -84,17 +86,17 @@ def chat():
 
     if not is_diabetes_related(user_message):
         return jsonify({
-            "response": "I can only assist with diabetes-related questions. "
-                        "Please ask about blood sugar, insulin, glucose levels, or diabetes management."
+            "response": "I'm specialized for diabetes questions only. "
+                        "Ask me about blood sugar, insulin, or diabetes management! 😊"
         }), 200
 
-    # ── Session-based conversation memory ─────────────────────────────────────
+    if not GROQ_API_KEY:
+        return jsonify({"response": "API key not configured. Please set the GROQ_API_KEY environment variable."}), 500
+
     if "chat_history" not in session:
         session["chat_history"] = []
 
-    # Keep last 6 turns (3 user + 3 assistant) to fit context window
-    history = session["chat_history"][-6:]
-
+    history  = session["chat_history"][-6:]
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += history
     messages.append({"role": "user", "content": user_message})
@@ -113,16 +115,13 @@ def chat():
         }
         resp = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=15)
         resp.raise_for_status()
-        result      = resp.json()
-        ai_response = result["choices"][0]["message"]["content"].strip()
+        ai_response = resp.json()["choices"][0]["message"]["content"].strip()
 
-        # Save to session memory
         session["chat_history"] = history + [
             {"role": "user",      "content": user_message},
             {"role": "assistant", "content": ai_response},
         ]
         session.modified = True
-
         return jsonify({"response": ai_response})
 
     except requests.exceptions.HTTPError as e:
@@ -151,7 +150,6 @@ def add_reading():
         level = float(level)
     except (ValueError, TypeError):
         return jsonify({"error": "Level must be a number."}), 400
-
     if level < 20 or level > 600:
         return jsonify({"error": "Level must be between 20 and 600 mg/dL."}), 400
 
@@ -168,8 +166,7 @@ def add_reading():
 
 @app.route("/get-readings", methods=["GET"])
 def get_readings():
-    sorted_r = sorted(readings, key=lambda x: x["date"])
-    return jsonify({"readings": sorted_r})
+    return jsonify({"readings": sorted(readings, key=lambda x: x["date"])})
 
 
 @app.route("/delete-reading/<int:rid>", methods=["DELETE"])
@@ -179,8 +176,6 @@ def delete_reading(rid):
     return jsonify({"message": "Reading deleted."})
 
 
-import os
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    app.run(debug=False, host="0.0.0.0", port=port)
